@@ -1,0 +1,152 @@
+<!doctype html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phone Bot</title>
+<style>
+  body { margin:0; background:#111; height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; overflow:hidden; font-family:sans-serif; }
+  canvas { background:#111; }
+  #caption { color:#8f8; font-family:monospace; font-size:14px; text-align:center; padding:10px 20px; min-height:40px; }
+  #talkBtn {
+    margin-top:10px; padding:18px 40px; font-size:18px; border-radius:30px;
+    border:none; background:#4fdc6b; color:#111; font-weight:bold;
+  }
+  #talkBtn:active { background:#3ab854; }
+  #setup { color:#eee; padding:20px; max-width:400px; font-family:sans-serif; }
+  #setup input { width:100%; padding:10px; font-size:14px; margin-top:8px; box-sizing:border-box; }
+  #setup button { margin-top:12px; padding:10px 20px; font-size:16px; }
+</style>
+</head>
+<body>
+
+<div id="setup">
+  <h3 style="color:#4fdc6b;">One-time setup</h3>
+  <p>Paste your Anthropic API key (from console.anthropic.com). It's stored only in this browser tab's memory, not sent anywhere except api.anthropic.com.</p>
+  <input id="apiKeyInput" type="password" placeholder="sk-ant-...">
+  <button onclick="saveKey()">Start</button>
+</div>
+
+<div id="botUI" style="display:none; flex-direction:column; align-items:center;">
+  <canvas id="face" width="320" height="320"></canvas>
+  <div id="caption">Tap the button and speak</div>
+  <button id="talkBtn" onclick="startListening()">🎤 Tap to talk</button>
+</div>
+
+<script>
+let apiKey = "";
+let mode = "idle"; // idle | listening | talking
+let recognition = null;
+
+function saveKey() {
+  const v = document.getElementById('apiKeyInput').value.trim();
+  if (!v) return;
+  apiKey = v;
+  document.getElementById('setup').style.display = 'none';
+  document.getElementById('botUI').style.display = 'flex';
+  speak("Hello. I'm ready when you are.");
+}
+
+// ---- Face animation ----
+const canvas = document.getElementById('face');
+const ctx = canvas.getContext('2d');
+let t = 0;
+function draw() {
+  t += 1;
+  ctx.clearRect(0,0,320,320);
+  const blink = (Math.floor(t/30) % 6 === 0) ? 4 : 32;
+  ctx.fillStyle = '#4fdc6b';
+  ctx.beginPath(); ctx.ellipse(110,130,26,blink,0,0,2*Math.PI); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(210,130,26,blink,0,0,2*Math.PI); ctx.fill();
+  ctx.strokeStyle = '#4fdc6b';
+  ctx.lineWidth = 8;
+  ctx.beginPath();
+  if (mode === 'talking') {
+    const open = 16 + Math.sin(t/2) * 12;
+    ctx.ellipse(160,210,48,Math.max(4,open),0,0,2*Math.PI);
+    ctx.stroke();
+  } else if (mode === 'listening') {
+    ctx.arc(160,200,40,0.15*Math.PI,0.85*Math.PI);
+    ctx.stroke();
+  } else {
+    ctx.moveTo(120,210); ctx.lineTo(200,210); ctx.stroke();
+  }
+  requestAnimationFrame(draw);
+}
+draw();
+
+function setCaption(text) {
+  document.getElementById('caption').innerText = text;
+}
+
+// ---- Speech recognition (listening) ----
+function startListening() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) {
+    setCaption("This browser doesn't support speech recognition. Use Chrome.");
+    return;
+  }
+  mode = 'listening';
+  setCaption('Listening...');
+  recognition = new SR();
+  recognition.lang = 'en-GB';
+  recognition.interimResults = false;
+  recognition.maxAlternatives = 1;
+
+  recognition.onresult = (event) => {
+    const heard = event.results[0][0].transcript;
+    setCaption('You said: ' + heard);
+    askClaude(heard);
+  };
+  recognition.onerror = (event) => {
+    mode = 'idle';
+    setCaption('Mic error: ' + event.error + '. Tap to try again.');
+  };
+  recognition.onend = () => {
+    if (mode === 'listening') mode = 'idle';
+  };
+  recognition.start();
+}
+
+// ---- Text to speech (talking) ----
+function speak(text) {
+  mode = 'talking';
+  setCaption(text);
+  const utter = new SpeechSynthesisUtterance(text);
+  utter.rate = 1.0;
+  utter.onend = () => { mode = 'idle'; };
+  speechSynthesis.speak(utter);
+}
+
+// ---- Claude API call ----
+async function askClaude(userText) {
+  setCaption('Thinking...');
+  try {
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 300,
+        system: 'You are a friendly voice assistant living in a small robot face on a phone. Keep replies short - 1 to 3 sentences - since they will be spoken aloud.',
+        messages: [{ role: 'user', content: userText }]
+      })
+    });
+    const data = await resp.json();
+    if (data.error) {
+      speak('Error: ' + (data.error.message || 'something went wrong'));
+      return;
+    }
+    const reply = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join(' ').trim();
+    speak(reply || "I'm not sure what to say to that.");
+  } catch (e) {
+    speak('Sorry, I could not reach my brain just then.');
+  }
+}
+</script>
+</body>
+</html>
